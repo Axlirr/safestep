@@ -89,6 +89,9 @@ login_manager.login_view = 'login'
 # Register before_request handler for questionnaire completion check
 @app.before_request
 def before_request():
+    # Skip questionnaire check during login/logout process to prevent HTTP 500 errors
+    if request.endpoint in ['login', 'logout', 'signup', 'static']:
+        return
     check_questionnaire_completion()
 
 # Database Models
@@ -696,111 +699,135 @@ def landing():
 
 @app.route('/login', methods=['GET', 'POST'])
 def login():
-    # Debug: Check if user is already authenticated when accessing login page
-    print(f"🔍 Login route accessed - User authenticated: {current_user.is_authenticated}")
-    if current_user.is_authenticated:
-        print(f"🔍 Current user: {current_user.username} ({current_user.role})")
-    
-    # If user is already logged in, redirect to appropriate dashboard
-    if current_user.is_authenticated:
-        if current_user.role == 'admin':
-            return redirect(url_for('admin_dashboard'))
-        else:
-            return redirect(url_for('caregiver_dashboard'))
-    
-    if request.method == 'POST':
-        username = request.form.get('username', '').strip()
-        password = request.form.get('password', '').strip()
-        user_type = request.form.get('userType', '').strip()
+    try:
+        # Debug: Check if user is already authenticated when accessing login page
+        print(f"🔍 Login route accessed - User authenticated: {current_user.is_authenticated}")
+        if current_user.is_authenticated:
+            print(f"🔍 Current user: {current_user.username} ({current_user.role})")
         
-        print(f"Login attempt - Username: {username}, UserType: {user_type}")
-        
-        if not username or not password or not user_type:
-            flash('Please fill in all fields', 'error')
-            return render_template('auth/login.html')
-        
-        # First try to find user in local database
-        user = User.query.filter_by(username=username).first()
-        
-        # If user not found, try by email (in case they entered email instead of username)
-        if not user:
-            user = User.query.filter_by(email=username).first()
-        
-        if user:
-            print(f"User found - Role: {user.role}, Active: {user.is_active}")
-            
-            # Force fresh query to get latest password hash from database
-            db.session.refresh(user)
-            fresh_user = User.query.filter_by(username=username).first()
-            print(f"Fresh query - Password hash: {fresh_user.password_hash}")
-            
-            # Check if user type matches user role
-            if user.role != user_type:
-                print(f"Role mismatch - User role: {user.role}, Selected type: {user_type}")
-                flash('Invalid user type for this account', 'error')
-                return render_template('auth/login.html')
-            
-            # Verify password - try both local and Supabase authentication
-            password_valid = False
-            
-            # First try local password verification with fresh hash
-            if check_password_hash(fresh_user.password_hash, password):
-                password_valid = True
-                print("✅ Local password check passed")
+        # If user is already logged in, redirect to appropriate dashboard
+        if current_user.is_authenticated:
+            if current_user.role == 'admin':
+                return redirect(url_for('admin_dashboard'))
             else:
-                print(f"❌ Local password check failed for user: {user.username}")
-                print(f"Password provided: {password}")
-                print(f"Stored hash: {fresh_user.password_hash}")
-            
-            # If local password fails and Supabase is available, try Supabase auth
-            if not password_valid and supabase_available:
+                return redirect(url_for('caregiver_dashboard'))
+        
+        if request.method == 'POST':
+            try:
+                username = request.form.get('username', '').strip()
+                password = request.form.get('password', '').strip()
+                user_type = request.form.get('userType', '').strip()
+                
+                print(f"Login attempt - Username: {username}, UserType: {user_type}")
+                
+                if not username or not password or not user_type:
+                    flash('Please fill in all fields', 'error')
+                    return render_template('auth/login.html')
+                
                 try:
-                    from supabase_integration import get_supabase_client
-                    supabase = get_supabase_client()
+                    # First try to find user in local database
+                    user = User.query.filter_by(username=username).first()
                     
-                    if supabase:
-                        auth_response = supabase.auth.sign_in_with_password({
-                            "email": user.email,
-                            "password": password
-                        })
+                    # If user not found, try by email (in case they entered email instead of username)
+                    if not user:
+                        user = User.query.filter_by(email=username).first()
+                    
+                    if user:
+                        print(f"User found - Role: {user.role}, Active: {user.is_active}")
                         
-                        if auth_response.user:
-                            password_valid = True
-                            print("Supabase password check passed")
+                        try:
+                            # Force fresh query to get latest password hash from database
+                            db.session.refresh(user)
+                            fresh_user = User.query.filter_by(username=username).first()
+                            print(f"Fresh query - Password hash: {fresh_user.password_hash}")
                             
-                            # Update local password hash for future logins
-                            user.password_hash = generate_password_hash(password)
-                            db.session.commit()
+                            # Check if user type matches user role
+                            if user.role != user_type:
+                                print(f"Role mismatch - User role: {user.role}, Selected type: {user_type}")
+                                flash('Invalid user type for this account', 'error')
+                                return render_template('auth/login.html')
                             
-                except Exception as e:
-                    print(f"Supabase authentication failed: {e}")
-            
-            if password_valid:
-                if user.is_active:
-                    login_user(user, remember=True)
-                    print(f"User logged in successfully as {user.role}")
-                    
-                    # Store session info
-                    session['user_id'] = user.id
-                    session['user_role'] = user.role
-                    session['user_name'] = f"{user.first_name} {user.last_name}"
-                    
-                    # Redirect based on user role
-                    if user.role == 'admin':
-                        return redirect(url_for('admin_dashboard'))
+                            # Verify password - try both local and Supabase authentication
+                            password_valid = False
+                            
+                            try:
+                                # First try local password verification with fresh hash
+                                if check_password_hash(fresh_user.password_hash, password):
+                                    password_valid = True
+                                    print("✅ Local password check passed")
+                                else:
+                                    print(f"❌ Local password check failed for user: {user.username}")
+                                    print(f"Password provided: {password}")
+                                    print(f"Stored hash: {fresh_user.password_hash}")
+                            except Exception as e:
+                                print(f"⚠️ Local password check error: {e}")
+                            
+                            # If local password fails and Supabase is available, try Supabase auth
+                            if not password_valid and supabase_available:
+                                try:
+                                    from supabase_integration import get_supabase_client
+                                    supabase = get_supabase_client()
+                                    
+                                    if supabase:
+                                        auth_response = supabase.auth.sign_in_with_password({
+                                            "email": user.email,
+                                            "password": password
+                                        })
+                                        
+                                        if auth_response.user:
+                                            password_valid = True
+                                            print("✅ Supabase password check passed")
+                                            
+                                            # Update local password hash for future logins
+                                            user.password_hash = generate_password_hash(password)
+                                            db.session.commit()
+                                            
+                                except Exception as e:
+                                    print(f"⚠️ Supabase authentication failed: {e}")
+                            
+                            if password_valid:
+                                if user.is_active:
+                                    try:
+                                        login_user(user, remember=True)
+                                        print(f"User logged in successfully as {user.role}")
+                                        
+                                        # Store session info
+                                        session['user_id'] = user.id
+                                        session['user_role'] = user.role
+                                        session['user_name'] = f"{user.first_name} {user.last_name}"
+                                        
+                                        # Redirect based on user role
+                                        if user.role == 'admin':
+                                            return redirect(url_for('admin_dashboard'))
+                                        else:
+                                            return redirect(url_for('caregiver_dashboard'))
+                                    except Exception as e:
+                                        print(f"⚠️ Login session creation failed: {e}")
+                                        flash('Login failed. Please try again.', 'error')
+                                else:
+                                    print("User account is not active")
+                                    flash('Account is deactivated', 'error')
+                            else:
+                                print("Password check failed")
+                                flash('Invalid password', 'error')
+                        except Exception as e:
+                            print(f"⚠️ User authentication error: {e}")
+                            flash('Authentication error. Please try again.', 'error')
                     else:
-                        return redirect(url_for('caregiver_dashboard'))
-                else:
-                    print("User account is not active")
-                    flash('Account is deactivated', 'error')
-            else:
-                print("Password check failed")
-                flash('Invalid password', 'error')
-        else:
-            print("User not found")
-            flash('Invalid username or email', 'error')
-    
-    return render_template('auth/login.html')
+                        print("User not found")
+                        flash('Invalid username or email', 'error')
+                except Exception as e:
+                    print(f"⚠️ Database query error during login: {e}")
+                    flash('Login service temporarily unavailable. Please try again.', 'error')
+            except Exception as e:
+                print(f"⚠️ Form processing error: {e}")
+                flash('Invalid form data. Please try again.', 'error')
+        
+        return render_template('auth/login.html')
+    except Exception as e:
+        print(f"❌ Critical login error: {e}")
+        flash('Login service error. Please contact support if this persists.', 'error')
+        return render_template('auth/login.html')
 
 @app.route('/signup', methods=['GET', 'POST'])
 def signup():
@@ -908,25 +935,36 @@ def signup():
 
 def check_questionnaire_completion():
     """Check if user has completed questionnaire and redirect if needed"""
-    if current_user.is_authenticated:
-        # Skip questionnaire check for admin users
-        if current_user.role == 'admin':
-            return
-        
-        # Skip questionnaire check for API endpoints (especially enhanced routes)
-        if request.endpoint and (
-            request.endpoint.startswith('enhanced.') or 
-            request.path.startswith('/api/') or
-            request.endpoint in ['questionnaire', 'logout', 'static', 'signup', 'login']
-        ):
-            return
-        
-        # Check if user has completed questionnaire
-        existing_questionnaire = UserQuestionnaire.query.filter_by(user_id=current_user.id).first()
-        if not existing_questionnaire:
-            # Redirect to questionnaire if not completed
-            print(f"🔍 Redirecting user {current_user.id} to questionnaire from {request.endpoint}")
-            return redirect(url_for('questionnaire'))
+    try:
+        if current_user.is_authenticated:
+            # Skip questionnaire check for admin users
+            if current_user.role == 'admin':
+                return
+            
+            # Skip questionnaire check for API endpoints (especially enhanced routes)
+            if request.endpoint and (
+                request.endpoint.startswith('enhanced.') or 
+                request.path.startswith('/api/') or
+                request.endpoint in ['questionnaire', 'logout', 'static', 'signup', 'login']
+            ):
+                return
+            
+            try:
+                # Check if user has completed questionnaire
+                questionnaire = UserQuestionnaire.query.filter_by(user_id=current_user.id).first()
+                
+                if not questionnaire:
+                    print(f"🔍 Redirecting user {current_user.id} to questionnaire from {request.endpoint}")
+                    return redirect(url_for('questionnaire'))
+                    
+            except Exception as db_error:
+                print(f"⚠️ Database error checking questionnaire completion: {db_error}")
+                # Don't redirect on database errors, let the user continue
+                return
+    except Exception as e:
+        # Log the error but don't crash the application
+        print(f"⚠️ Error in questionnaire completion check: {e}")
+        return
 
 @app.route('/questionnaire', methods=['GET', 'POST'])
 @login_required
