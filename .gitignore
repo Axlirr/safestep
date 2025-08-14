@@ -1,3 +1,12 @@
+# Google Cloud and Security Files
+*.json
+github-actions-key.json
+.env
+.env.local
+.env.production
+.gcloudignore
+
+# Virtual Environment
 venv/pyvenv.cfg
 venv/bin/activate
 venv/bin/activate.csh

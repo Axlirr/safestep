@@ -28,5 +28,8 @@ RUN mkdir -p instance
 # Set port
 ENV PORT=8080
 
-# Use wsgi.py for production
-CMD ["python", "wsgi.py"]
+# Expose port
+EXPOSE 8080
+
+# Use gunicorn for production
+CMD ["gunicorn", "--bind", "0.0.0.0:8080", "--workers", "2", "--timeout", "120", "wsgi:app"]
